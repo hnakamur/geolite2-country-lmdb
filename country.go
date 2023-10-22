@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"strings"
 
 	"github.com/bmatsuo/lmdb-go/lmdb"
@@ -24,15 +25,19 @@ const debug = false
 //
 // For difference among country, registered country, and represented country,
 // see https://dev.maxmind.com/geoip/whats-new-in-geoip2/#country-registered-country-and-represented-country
-func LookupCountry(dbi lmdb.DBI, ip net.IP, outCountry, outRegisteredCountry, outRepresentedCountry *string) lmdb.TxnOp {
+func LookupCountry(dbi lmdb.DBI, ip netip.Addr, outCountry, outRegisteredCountry, outRepresentedCountry *string) lmdb.TxnOp {
 	return func(txn *lmdb.Txn) error {
+		if !ip.Is4() {
+			return errors.New("non-IPv4 address is not supported")
+		}
 		cur, err := txn.OpenCursor(dbi)
 		if err != nil {
 			return err
 		}
 		defer cur.Close()
 
-		endIP, val, err := cur.Get(ip, nil, lmdb.SetRange)
+		ipSlice := ip.AsSlice()
+		endIP, val, err := cur.Get(ipSlice, nil, lmdb.SetRange)
 		if err != nil {
 			return err
 		}
@@ -47,7 +52,7 @@ func LookupCountry(dbi lmdb.DBI, ip net.IP, outCountry, outRegisteredCountry, ou
 				strings.TrimSpace(string(val[6:8])),
 				strings.TrimSpace(string(val[8:])))
 		}
-		if bytes.Compare(ip, startIP) < 0 || bytes.Compare(ip, endIP) > 0 {
+		if bytes.Compare(ipSlice, startIP) < 0 || bytes.Compare(ipSlice, endIP) > 0 {
 			return lmdb.NotFound
 		}
 		if outCountry != nil {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"testing"
 	"time"
@@ -36,15 +37,6 @@ func TestLookupCountry(t *testing.T) {
 		{ip: "255.255.255.255", country: "", registeredCountry: "", representedCountry: ""},
 	}
 
-	mustParseIP := func(t *testing.T, ip string) net.IP {
-		t.Helper()
-		parsed := net.ParseIP(ip)
-		if parsed == nil || parsed.To4() == nil {
-			t.Fatalf("bad test case IP: %s", ip)
-		}
-		return parsed.To4()
-	}
-
 	verify := func(t *testing.T, country, registeredCountry, representedCountry string, tc *testCase) {
 		t.Helper()
 		if country != tc.country {
@@ -74,7 +66,7 @@ func TestLookupCountry(t *testing.T) {
 		for _, tc := range testCases {
 			var country, registeredCountry, representedCountry string
 			if err := env.View(func(txn *lmdb.Txn) (err error) {
-				ip := mustParseIP(t, tc.ip)
+				ip := netip.MustParseAddr(tc.ip)
 				if err := LookupCountry(dbi, ip, &country, &registeredCountry, &representedCountry)(txn); err != nil {
 					if !lmdb.IsNotFound(err) {
 						return err
@@ -95,7 +87,10 @@ func TestLookupCountry(t *testing.T) {
 		defer db.Close()
 
 		for _, tc := range testCases {
-			ip := mustParseIP(t, tc.ip)
+			ip := net.ParseIP(tc.ip)
+			if ip == nil || ip.To4() == nil {
+				t.Fatalf("bad test case IP: %s", ip)
+			}
 			var record mmdbCountryRecord
 			err := db.Lookup(ip, &record)
 			if err != nil {
