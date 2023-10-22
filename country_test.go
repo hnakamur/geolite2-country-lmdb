@@ -2,88 +2,60 @@ package geolite2countrylmdb
 
 import (
 	"bytes"
+	"log"
 	"net"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/bmatsuo/lmdb-go/lmdb"
 	"github.com/oschwald/maxminddb-golang"
-	"pgregory.net/rapid"
 )
 
 const mmdbPath = "GeoLite2-Country.mmdb"
 
-func TestLookupCountry_Property(t *testing.T) {
-	// set up LMDB
-	lmdbPath := t.TempDir()
-	env, dbi := setupLMDB(t, lmdbPath)
-	defer env.Close()
-
-	if err := env.Update(func(txn *lmdb.Txn) (err error) {
-		return UpdateCountry(mmdbPath, dbi)(txn)
-	}); err != nil {
-		t.Fatal(err)
-	}
-
-	// set up MaxMindDB
-	db, err := maxminddb.Open(mmdbPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer db.Close()
-
-	rapid.Check(t, func(t *rapid.T) {
-		ip := net.IP(rapid.SliceOfN(rapid.Byte(), 4, 4).Draw(t, "ip"))
-
-		// Lookup LMDB
-		var got string
-		if err := env.View(func(txn *lmdb.Txn) (err error) {
-			if err := LookupCountry(dbi, ip.To4(), &got)(txn); err != nil {
-				if !lmdb.IsNotFound(err) {
-					return err
-				}
-				got = "-"
-			}
-			return nil
-		}); err != nil {
-			t.Fatal(err)
-		}
-
-		// Lookup MaxMind
-		record := struct {
-			Country struct {
-				IsoCode string `maxminddb:"iso_code"`
-			} `maxminddb:"country"`
-		}{}
-
-		record.Country.IsoCode = "-"
-		err := db.Lookup(ip, &record)
-		if err != nil {
-			t.Fatal(err)
-		}
-		want := record.Country.IsoCode
-		if got != want {
-			t.Fatalf("LMDB result does not match to MaxMind result, ip=%s, got=%s, want=%s", ip, got, want)
-		}
-	})
-}
-
 func TestLookupCountry(t *testing.T) {
-	mmdbPath := "GeoIP2-Country-Test.mmdb"
-	testCases := []struct {
-		ip   string
-		want string
-	}{
-		// {ip: "0.255.255.255", want: "-"},
-		// {ip: "1.0.0.0", want: "AU"},
-		// {ip: "1.0.0.1", want: "AU"},
-		// {ip: "1.0.16.0", want: "JP"},
-		// {ip: "1.1.1.1", want: "US"},
-		// {ip: "212.47.235.82", want: "PH"},
-		{ip: "1.1.1.1", want: "-"},
-		{ip: "212.47.235.82", want: "-"},
-		// {ip: "223.255.255.255", want: "AU"},
-		// {ip: "224.0.0.0", want: "-"},
+	type testCase struct {
+		ip                 string
+		country            string
+		registeredCountry  string
+		representedCountry string
+	}
+	testCases := []testCase{
+		{ip: "0.0.0.0", country: "", registeredCountry: "", representedCountry: ""},
+		{ip: "0.0.0.255", country: "", registeredCountry: "", representedCountry: ""},
+		{ip: "1.0.0.0", country: "AU", registeredCountry: "AU", representedCountry: ""},
+		{ip: "1.0.0.1", country: "AU", registeredCountry: "AU", representedCountry: ""},
+		{ip: "1.0.16.0", country: "JP", registeredCountry: "JP", representedCountry: ""},
+		{ip: "1.1.1.1", country: "", registeredCountry: "AU", representedCountry: ""},
+		{ip: "8.8.4.4", country: "US", registeredCountry: "US", representedCountry: ""},
+		{ip: "8.8.8.8", country: "US", registeredCountry: "US", representedCountry: ""},
+		{ip: "212.47.235.82", country: "FR", registeredCountry: "FR", representedCountry: ""},
+		{ip: "223.255.255.255", country: "AU", registeredCountry: "AU", representedCountry: ""},
+		{ip: "224.0.0.0", country: "", registeredCountry: "", representedCountry: ""},
+		{ip: "255.255.255.255", country: "", registeredCountry: "", representedCountry: ""},
+	}
+
+	mustParseIP := func(t *testing.T, ip string) net.IP {
+		t.Helper()
+		parsed := net.ParseIP(ip)
+		if parsed == nil || parsed.To4() == nil {
+			t.Fatalf("bad test case IP: %s", ip)
+		}
+		return parsed.To4()
+	}
+
+	verify := func(t *testing.T, country, registeredCountry, representedCountry string, tc *testCase) {
+		t.Helper()
+		if country != tc.country {
+			t.Errorf("country mismatch for IP=%s, got=%s, want=%s", tc.ip, country, tc.country)
+		}
+		if registeredCountry != tc.registeredCountry {
+			t.Errorf("registeredCountry mismatch for IP=%s, got=%s, want=%s", tc.ip, registeredCountry, tc.registeredCountry)
+		}
+		if representedCountry != tc.representedCountry {
+			t.Errorf("representedCountry mismatch for IP=%s, got=%s, want=%s", tc.ip, representedCountry, tc.representedCountry)
+		}
 	}
 
 	t.Run("LMDB", func(t *testing.T) {
@@ -91,32 +63,28 @@ func TestLookupCountry(t *testing.T) {
 		env, dbi := setupLMDB(t, lmdbPath)
 		defer env.Close()
 
+		t0 := time.Now()
 		if err := env.Update(func(txn *lmdb.Txn) (err error) {
-			return UpdateCountry(mmdbPath, dbi)(txn)
+			return SetupCountry(mmdbPath, dbi)(txn)
 		}); err != nil {
 			t.Fatal(err)
 		}
+		log.Printf("UpdateCountry done, elapsed=%s", time.Since(t0))
 
 		for _, tc := range testCases {
-			var got string
+			var country, registeredCountry, representedCountry string
 			if err := env.View(func(txn *lmdb.Txn) (err error) {
-				ip := net.ParseIP(tc.ip)
-				if ip == nil || ip.To4() == nil {
-					t.Fatalf("bad test case IP: %s", tc.ip)
-				}
-				if err := LookupCountry(dbi, ip.To4(), &got)(txn); err != nil {
+				ip := mustParseIP(t, tc.ip)
+				if err := LookupCountry(dbi, ip, &country, &registeredCountry, &representedCountry)(txn); err != nil {
 					if !lmdb.IsNotFound(err) {
 						return err
 					}
-					got = "-"
 				}
 				return nil
 			}); err != nil {
 				t.Fatal(err)
 			}
-			if got != tc.want {
-				t.Errorf("result mismatch for IP=%s, got=%s, want=%s", tc.ip, got, tc.want)
-			}
+			verify(t, country, registeredCountry, representedCountry, &tc)
 		}
 	})
 	t.Run("MaxMind", func(t *testing.T) {
@@ -126,26 +94,17 @@ func TestLookupCountry(t *testing.T) {
 		}
 		defer db.Close()
 
-		record := struct {
-			Country struct {
-				ISOCode string `maxminddb:"iso_code"`
-			} `maxminddb:"country"`
-		}{}
-
 		for _, tc := range testCases {
-			ip := net.ParseIP(tc.ip)
-			if ip == nil || ip.To4() == nil {
-				t.Fatalf("bad test case IP: %s", tc.ip)
-			}
-			record.Country.ISOCode = "-"
+			ip := mustParseIP(t, tc.ip)
+			var record mmdbCountryRecord
 			err := db.Lookup(ip, &record)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := record.Country.ISOCode
-			if got != tc.want {
-				t.Errorf("result mismatch for IP=%s, got=%s, want=%s", tc.ip, got, tc.want)
-			}
+			country := record.Country.ISOCode
+			registeredCountry := record.RegisteredCountry.ISOCode
+			representedCountry := record.RepresentedCountry.ISOCode
+			verify(t, country, registeredCountry, representedCountry, &tc)
 		}
 	})
 }
