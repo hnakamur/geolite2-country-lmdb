@@ -96,6 +96,9 @@ func setupLMDB(t *testing.T, lmdbPath string) (*lmdb.Env, lmdb.DBI) {
 	if err = env.SetMaxDBs(1); err != nil {
 		t.Fatal(err)
 	}
+	if err := env.SetMaxReaders(64); err != nil {
+		t.Fatal(err)
+	}
 	if err := env.SetMapSize(1 << 30); err != nil {
 		t.Fatal(err)
 	}
