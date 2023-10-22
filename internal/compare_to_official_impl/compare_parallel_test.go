@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/netip"
 	"os"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -93,12 +94,16 @@ func TestParallelCompareToOfficial(t *testing.T) {
 	for i := range jobCs {
 		jobCs[i] = make(chan job, 1)
 	}
-	errC := make(chan error, workerCount)
+	errCs := make([]chan error, workerCount)
+	for i := range jobCs {
+		errCs[i] = make(chan error, 1)
+	}
+
 	for i := 0; i < workerCount; i++ {
 		go func(i int) {
 			defer wg.Done()
 			for job := range jobCs[i] {
-				errC <- runJob(job)
+				errCs[i] <- runJob(job)
 			}
 		}(i)
 	}
@@ -142,22 +147,28 @@ func TestParallelCompareToOfficial(t *testing.T) {
 
 	t0 := time.Now()
 	var n uint32
-loop:
+	cases := make([]reflect.SelectCase, workerCount+1)
+	for i, errC := range errCs {
+		cases[i] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(errC)}
+	}
+	cases[workerCount] = reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(fatalErrC)}
 	for {
-		select {
-		case err := <-errC:
-			if err != nil {
-				t.Error(err)
+		i, val, ok := reflect.Select(cases)
+		if ok {
+			if i == workerCount {
+				t.Fatal(val.Interface())
+			} else {
+				if val.Interface() != nil {
+					t.Error(val.Interface())
+				}
+				n++
+				if n&0x00FFFFFF == 0 {
+					log.Printf("%.2f%% done, elapsed=%s", float64(n)*100.0/math.MaxUint32, time.Since(t0))
+				}
+				if n == math.MaxUint32 {
+					break
+				}
 			}
-			n++
-			if n&0x00FFFFFF == 0 {
-				log.Printf("%.2f%% done, elapsed=%s", float64(n)*100.0/math.MaxUint32, time.Since(t0))
-			}
-			if n == math.MaxUint32 {
-				break loop
-			}
-		case err := <-fatalErrC:
-			t.Fatal(err)
 		}
 	}
 	wg.Wait()
