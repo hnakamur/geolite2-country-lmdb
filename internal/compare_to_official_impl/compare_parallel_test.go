@@ -89,20 +89,29 @@ func TestParallelCompareToOfficial(t *testing.T) {
 
 	var wg sync.WaitGroup
 	wg.Add(workerCount)
-	jobC := make(chan job, workerCount)
+	jobCs := make([]chan job, workerCount)
+	for i := range jobCs {
+		jobCs[i] = make(chan job, 1)
+	}
 	errC := make(chan error, workerCount)
 	for i := 0; i < workerCount; i++ {
-		go func() {
+		go func(i int) {
 			defer wg.Done()
-			for job := range jobC {
+			for job := range jobCs[i] {
 				errC <- runJob(job)
 			}
-		}()
+		}(i)
 	}
 
 	fatalErrC := make(chan error, 1)
 	go func() {
-		defer close(jobC)
+		defer func() {
+			for i := range jobCs {
+				close(jobCs[i])
+			}
+		}()
+
+		i := 0
 		for {
 			record, err := r.Read()
 			if err != nil {
@@ -118,11 +127,15 @@ func TestParallelCompareToOfficial(t *testing.T) {
 					strings.Join(record, ","), len(record), 4)
 				return
 			}
-			jobC <- job{
+			jobCs[i] <- job{
 				ip:                     record[0],
 				wantCountry:            record[1],
 				wantRegisteredCountry:  record[2],
 				wantRepresentedCountry: record[3],
+			}
+			i++
+			if i == workerCount {
+				i = 0
 			}
 		}
 	}()
